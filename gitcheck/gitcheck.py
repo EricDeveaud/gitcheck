@@ -518,8 +518,8 @@ if __name__ == "__main__":
                         default=False,
                         help='Display info only when repository needs action')
     parser.add_argument('-e', '--email',
-                        action='store',
-                        default=None,
+                        action='store_true',
+                        default=False,
                         help='Send an email with result as html, using mail.properties parameters')
     parser.add_argument('-a', '--all',
                         dest='checkall',
