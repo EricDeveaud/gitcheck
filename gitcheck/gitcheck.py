@@ -1,11 +1,13 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals, absolute_import, division, print_function
+
 
 import os
 import re
 import sys
-import getopt
+
+import argparse
 import time
 import subprocess
 from subprocess import PIPE
@@ -23,7 +25,6 @@ import json
 from colored import fg, bg, attr
 
 # Global vars
-argopts = {}
 colortheme = None
 #Load custom parameters from ~/mygitcheck.py
 configfile = expanduser('~/mygitcheck.py')
@@ -65,16 +66,15 @@ class html:
 
 
 def showDebug(mess, level='info'):
-    if argopts.get('debugmod', False):
+    if opts.debugmod:
         print(mess)
 
 
 # Search all local repositories from current directory
-def searchRepositories():
+def searchRepositories(args):
     showDebug('Beginning scan... building list of git folders')
-    dirs = argopts.get('searchDir', [os.path.abspath(os.getcwd())])
     repo = set()
-    for curdir in dirs:
+    for curdir in args:
         if curdir[-1:] == '/':
             curdir = curdir[:-1]
         showDebug("  Scan git repositories from %s" % curdir)
@@ -84,7 +84,7 @@ def searchRepositories():
 
         for directory, dirnames, filenames in os.walk(curdir):
             level = directory.count(os.sep) - startinglevel
-            if argopts.get('depth', None) is None or level <= argopts.get('depth', None):
+            if opts.depth is 0 or level <= opts.depth:
                 if '.git' in dirnames:
                     showDebug("  Add %s repository" % directory)
                     repo.add(directory)
@@ -94,16 +94,15 @@ def searchRepositories():
 
 
 # Check state of a git repository
-def checkRepository(rep, branch):
+def checkRepository(rep, branch, opts, args):
     aitem = []
     mitem = []
     ditem = []
     gsearch = re.compile(r'^.?([A-Z]) (.*)')
-
-    if re.match(argopts.get('ignoreBranch', r'^$'), branch):
+    if re.match(opts.ignoreBranch, branch):
         return False
 
-    changes = getLocalFilesChange(rep)
+    changes = getLocalFilesChange(rep, opts)
     ischange = len(changes) > 0
     actionNeeded = False  # actionNeeded is branch push/pull, not local file change.
 
@@ -149,23 +148,24 @@ def checkRepository(rep, branch):
                     r,
                     count
                 )
-    if ischange or not argopts.get('quiet', False):
+    if ischange or not opts.quiet:
         # Remove trailing slash from repository/directory name
         if rep[-1:] == '/':
             rep = rep[:-1]
 
-        # Do some magic to not show the absolute path as repository name
-        # Case 1: script was started in a directory that is a git repo
-        if rep == os.path.abspath(os.getcwd()):
-            (head, tail) = os.path.split(rep)
-            if tail != '':
-                repname = tail
-        # Case 2: script was started in a directory with possible subdirs that contain git repos
-        elif rep.find(os.path.abspath(os.getcwd())) == 0:
-            repname = rep[len(os.path.abspath(os.getcwd())) + 1:]
-        # Case 3: script was started with -d and above cases do not apply
-        else:
+        if opts.full_path:
             repname = rep
+        # Do some magic to not show the absolute path as repository name
+        else:
+            for target in  args:
+                if rep.startswith(target):
+                    #Case 1: script was started in a directory that is a git repo
+                    if target == rep:
+                        repname = os.path.basename(rep)
+                    # Case 2: script was started in a directory with possible subdirs that contain git repos
+                    else:
+                        repname = rep[len(target)+1:]
+                    break
 
         if ischange:
             prjname = "%s%s%s" % (colortheme['prjchanged'], repname, colortheme['default'])
@@ -180,7 +180,7 @@ def checkRepository(rep, branch):
         # Print result
         if len(changes) > 0:
             strlocal = "%sLocal%s[" % (colortheme['reponame'], colortheme['default'])
-            lenFilesChnaged = len(getLocalFilesChange(rep))
+            lenFilesChnaged = len(getLocalFilesChange(rep, opts))
             strlocal += "%sTo Commit:%s%s" % (
                 colortheme['remoteto'],
                 colortheme['default'],
@@ -196,17 +196,17 @@ def checkRepository(rep, branch):
             strlocal = ""
             html.strlocal = ""
 
-        if argopts.get('email', False):
+        if opts.email:
             html.msg += "<li>%s/%s %s %s %s</li>\n" % (html.prjname, branch, html.strlocal, html.topush, html.topull)
 
         else:
             cbranch = "%s%s" % (colortheme['branchname'], branch)
             print("%(prjname)s/%(cbranch)s %(strlocal)s%(topush)s%(topull)s" % locals())
 
-        if argopts.get('verbose', False):
+        if opts.verbose:
             if ischange > 0:
                 filename = "  |--Local"
-                if not argopts.get('email', False):
+                if not opts.email:
                     print(filename)
                 html.msg += '<ul><li><b>Local</b></li></ul>\n<ul>\n'
                 for c in changes:
@@ -217,7 +217,7 @@ def checkRepository(rep, branch):
                         c[1],
                         colortheme['default'])
                     html.msg += '<li> <b style="color:orange">[To Commit] </b>%s</li>\n' % c[1]
-                    if not argopts.get('email', False): print(filename)
+                    if not opts.email: print(filename)
                 html.msg += '</ul>\n'
             if branch != "":
                 remotes = getRemoteRepositories(rep)
@@ -226,7 +226,7 @@ def checkRepository(rep, branch):
                     if len(commits) > 0:
                         rname = "  |--%(r)s" % locals()
                         html.msg += '<ul><li><b>%(r)s</b></li>\n</ul>\n<ul>\n' % locals()
-                        if not argopts.get('email', False): print(rname)
+                        if not opts.email: print(rname)
                         for commit in commits:
                             pcommit = "     |--%s[To Push]%s %s%s%s" % (
                                 colortheme['committo'],
@@ -235,7 +235,7 @@ def checkRepository(rep, branch):
                                 commit,
                                 colortheme['default'])
                             html.msg += '<li><b style="color:blue">[To Push] </b>%s</li>\n' % commit
-                            if not argopts.get('email', False): print(pcommit)
+                            if not opts.email: print(pcommit)
                         html.msg += '</ul>\n'
 
             if branch != "":
@@ -245,7 +245,7 @@ def checkRepository(rep, branch):
                     if len(commits) > 0:
                         rname = "  |--%(r)s" % locals()
                         html.msg += '<ul><li><b>%(r)s</b></li>\n</ul>\n<ul>\n' % locals()
-                        if not argopts.get('email', False): print(rname)
+                        if not opts.email: print(rname)
                         for commit in commits:
                             pcommit = "     |--%s[To Pull]%s %s%s%s" % (
                                 colortheme['committo'],
@@ -254,22 +254,22 @@ def checkRepository(rep, branch):
                                 commit,
                                 colortheme['default'])
                             html.msg += '<li><b style="color:blue">[To Pull] </b>%s</li>\n' % commit
-                            if not argopts.get('email', False): print(pcommit)
+                            if not opts.email: print(pcommit)
                         html.msg += '</ul>\n'
 
     return actionNeeded
 
 
-def getLocalFilesChange(rep):
+def getLocalFilesChange(rep,opts):
     files = []
     #curdir = os.path.abspath(os.getcwd())
     snbchange = re.compile(r'^(.{2}) (.*)')
-    onlyTrackedArg = "" if argopts.get('checkUntracked', False) else "uno"
+    onlyTrackedArg = "" if opts.checkUntracked else "uno"
     result = gitExec(rep, "status -s" + onlyTrackedArg)
 
     lines = result.split('\n')
     for l in lines:
-        if not re.match(argopts.get('ignoreLocal', r'^$'), l):
+        if not re.match(opts.ignoreLocal, l):
             m = snbchange.match(l)
             if m:
                 files.append([m.group(1), m.group(2)])
@@ -349,34 +349,37 @@ def gitExec(path, cmd):
 
 
 # Check all git repositories
-def gitcheck():
-    showDebug("Global Vars: %s" % argopts)
+def gitcheck(args):
+    if opts.debugmod:
+        showDebug("Global Vars:")
+        for k, v in opts.__dict__.items():
+            showDebug("\t%s: %s" %(k, v))
 
-    repo = searchRepositories()
+    repo = searchRepositories(args)
     actionNeeded = False
 
-    if argopts.get('checkremote', False):
+    if opts.checkremote:
         for r in repo:
             print ("Updating %s remotes..." % r)
             updateRemote(r)
 
-    if argopts.get('watchInterval', 0) > 0:
+    if opts.watchInterval > 0:
         print(colortheme['reset'])
         print(strftime("%Y-%m-%d %H:%M:%S"))
 
     showDebug("Processing repositories... please wait.")
     for r in repo:
-        if (argopts.get('checkall', False)):
+        if opts.checkall:
             branch = getAllBranches(r)
         else:
             branch = getDefaultBranch(r)
         for b in branch:
-            if checkRepository(r, b):
+            if checkRepository(r, b, opts, args):
                 actionNeeded = True
     html.timestamp = strftime("%Y-%m-%d %H:%M:%S")
     html.msg += "</ul>\n<p>Report created on %s</p>\n" % html.timestamp
 
-    if actionNeeded and argopts.get('bellOnActionNeeded', False):
+    if actionNeeded and opts.bellOnActionNeeded:
         print(colortheme['bell'])
 
 
@@ -444,98 +447,12 @@ def readDefaultConfig():
     if os.path.exists(filename):
         pass
 
-
-def usage():
-    print("Usage: %s [OPTIONS]" % (sys.argv[0]))
-    print("Check multiple git repository in one pass")
-    print("== Common options ==")
-    print("  -v, --verbose                        Show files & commits")
-    print("  --debug                              Show debug message")
-    print("  -r, --remote                         force remote update (slow)")
-    print("  -u, --untracked                      Show untracked files")
-    print("  -b, --bell                           bell on action needed")
-    print("  -w <sec>, --watch=<sec>              after displaying, wait <sec> and run again")
-    print("  -i <re>, --ignore-branch=<re>        ignore branches matching the regex <re>")
-    print("  -d <dir>, --dir=<dir>                Search <dir> for repositories (can be used multiple times)")
-    print("  -m <maxdepth>, --maxdepth=<maxdepth> Limit the depth of repositories search")
-    print("  -q, --quiet                          Display info only when repository needs action")
-    print("  -e, --email                          Send an email with result as html, using mail.properties parameters")
-    print("  -a, --all-branch                     Show the status of all branches")
-    print("  -l <re>, --localignore=<re>          ignore changes in local files which match the regex <re>")
-    print("  --init-email                         Initialize mail.properties file (has to be modified by user using JSON Format)")
-
-
-def main():
-    try:
-        opts, args = getopt.getopt(
-            sys.argv[1:],
-            "vhrubw:i:d:m:q:e:al:",
-            [
-                "verbose", "debug", "help", "remote", "untracked", "bell", "watch=", "ignore-branch=",
-                "dir=", "maxdepth=", "quiet", "email", "init-email", "all-branch", "localignore="
-            ]
-        )
-    except getopt.GetoptError as e:
-        if e.opt == 'w' and 'requires argument' in e.msg:
-            print("Please indicate nb seconds for refresh ex: gitcheck -w10")
-        else:
-            print(e.msg)
-        sys.exit(2)
-
-    readDefaultConfig()
-    for opt, arg in opts:
-        if opt in ["-v", "--verbose"]:
-            argopts['verbose'] = True
-        elif opt in ["--debug"]:
-            argopts['debugmod'] = True
-        elif opt in ["-r", "--remote"]:
-            argopts['checkremote'] = True
-        elif opt in ["-u", "--untracked"]:
-            argopts['checkUntracked'] = True
-        elif opt in ["-b", "--bell"]:
-            argopts['bellOnActionNeeded'] = True
-        elif opt in ["-w", "--watch"]:
-            try:
-                argopts['watchInterval'] = float(arg)
-            except ValueError:
-                print("option %s requires numeric value" % opt)
-                sys.exit(2)
-        elif opt in ["-i", "--ignore-branch"]:
-            argopts['ignoreBranch'] = arg
-        elif opt in ["-l", "--localignore"]:
-            argopts['ignoreLocal'] = arg
-        elif opt in ["-d", "--dir"]:
-            dirs = argopts.get('searchDir', [])
-            if (dirs == []):
-                argopts['searchDir'] = dirs
-            dirs.append(arg)
-        elif opt in ["-m", '--maxdepth']:
-            try:
-                argopts['depth'] = int(arg)
-            except ValueError:
-                print("option %s requires int value" % opt)
-                sys.exit(2)
-        elif opt in ["-q", "--quiet"]:
-            argopts['quiet'] = True
-        elif opt in ["-e", "--email"]:
-            argopts['email'] = True
-        elif opt in ["-a", "--all-branch"]:
-            argopts['checkall'] = True
-        elif opt in ["--init-email"]:
-            initEmailConfig()
-            sys.exit(0)
-        elif opt in ["-h", "--help"]:
-            usage()
-            sys.exit(0)
-#        else:
-#            print "Unhandled option %s" % opt
-#            sys.exit(2)
-
+def main(args):
     while True:
         try:
-            gitcheck()
+            gitcheck(args)
 
-            if argopts.get('email', False):
+            if opts.email:
                 sendReport(html.msg)
 
         except (KeyboardInterrupt, SystemExit):
@@ -543,13 +460,100 @@ def main():
         except Exception as e:
             print ("Unexpected error:", str(e))
 
-        if argopts.get('watchInterval', 0) > 0:
-            time.sleep(argopts.get('watchInterval', 0))
+        if opts.watchInterval > 0:
+            time.sleep(opts.watchInterval)
         else:
             break
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Check multiple git repository in one pass.',
+                                     epilog='example: gitcheck -m 1 -q target'
+                                     )
+    parser.add_argument('-v', '--verbose',
+                        action='store_true',
+                        default=False,
+                        help='Show files & commits')
+    parser.add_argument('--debug',
+                        dest='debugmod',
+                        action='store_true',
+                        default=False,
+                        help='Show debug message')
+    parser.add_argument('-r', '--remote',
+                        dest='checkremote',
+                        action='store_true',
+                        default=False,
+                        help='Force remote update (slow)')
+    parser.add_argument('-u', '--untracked',
+                        dest='checkUntracked',
+                        action='store_true',
+                        default=False,
+                        help='Show untracked files')
+    parser.add_argument('-b', '--bell',
+                        dest='bellOnActionNeeded',
+                        action='store_true',
+                        default=False,
+                        help='Bell on action needed')
+    parser.add_argument('-w', '--watch',
+                        dest='watchInterval',
+                        metavar='<sec>',
+                        action='store',
+                        type=float,
+                        default=0,
+                        help='After displaying, wait <sec> and run again')
+    parser.add_argument('-i', '--ignore-branch',
+                        dest='ignoreBranch',
+                        metavar='<re>',
+                        action='store',
+                        default=r'^$',
+                        help='Ignore branches matching the regex <re>')
+    parser.add_argument('-m', '--maxdepth',
+                        dest='depth',
+                        metavar='<depth>',
+                        action='store',
+                        type=int,
+                        default=0,
+                        help='Limit to <depth> the repositories search')
+    parser.add_argument('-q', '--quiet',
+                        action='store_true',
+                        default=False,
+                        help='Display info only when repository needs action')
+    parser.add_argument('-e', '--email',
+                        action='store',
+                        default=None,
+                        help='Send an email with result as html, using mail.properties parameters')
+    parser.add_argument('-a', '--all',
+                        dest='checkall',
+                        action='store_true',
+                        default=False,
+                        help='Show the status of all branches')
+    parser.add_argument('-l', '--localignore',
+                        dest='ignoreLocal',
+                        metavar='<re>',
+                        action='store',
+                        default=r'^$',
+                        help='ignore changes in local files which match the regex <re>')
+    parser.add_argument('--init-email',
+                        action='store_true',
+                        default=False,
+                        help='Initialize mail.properties file (has to be modified by user using JSON Format)')
+    parser.add_argument('-f', '--full-path',
+                        action='store_true',
+                        default=False,
+                        help='Show repository full path')
+    parser.add_argument('--no-color',
+                        action='store_true',
+                        default=False,
+                        help='Disable colored output')
+    parser.add_argument('args',
+                        nargs='*',
+                        help='tree or directory to check')
+
+    opts = parser.parse_args(sys.argv[1:])
+    args = [os.path.abspath(e) for e in opts.args]
+    if opts.no_color:
+        for k in colortheme:
+            colortheme[k]=''
     try:
-        main()
+        main(args)
     except KeyboardInterrupt:
         sys.exit(0)
