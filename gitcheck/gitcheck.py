@@ -385,9 +385,21 @@ def gitcheck(args):
 
 def sendReport(content):
     userPath = expanduser('~')
-    filepath = r'%s\Documents\.gitcheck' % userPath
-    filename = filepath + "//mail.properties"
-    config = json.load(open(filename))
+    #filepath = r'%s\Documents\.gitcheck' % userPath
+    #filename = filepath + "//mail.properties"
+    filepath = os.path.join(userPath, 'Documents', '.gitcheck')
+    filename = os.path.join(filepath, 'mail.properties')
+    try:
+        fh = open(filename)
+    except OSError as msg:
+            print(msg, file=sys.stderr)
+            sys.exit(1)
+    try:
+        config = json.load(fh)
+    except json.decoder.JSONDecodeError as msg:
+        print("Unable to load", filename, 'invalid format')
+        print(msg, file=sys.stderr)
+        sys.exit(1)
 
     # Create message container - the correct MIME type is multipart/alternative.
     msg = MIMEMultipart('alternative')
@@ -401,7 +413,7 @@ def sendReport(content):
         html.path, content
     )
     # Write html file to disk
-    f = open(filepath + '//result.html', 'w')
+    f = open(os.path.join(filepath, 'result.html'), 'w')
     f.write(htmlcontent)
     print ("File saved under %s\\result.html" % filepath)
     # Record the MIME types of both parts - text/plain and text/html.
@@ -424,6 +436,13 @@ def sendReport(content):
     except SMTPException as e:
         print("Error sending email : %s" % str(e))
 
+def bkupMailConfig(src, suffix='old'):
+    try:
+        os.rename(src, "%s.%s" %(src, suffix))
+    except OSError as msg:
+        print("Error: could not bkup email properti>es file", file=sys.stderr)
+        print(msg, file=sys.stderr)
+        sys.exit(1)
 
 def initEmailConfig():
 
@@ -435,10 +454,24 @@ def initEmailConfig():
     }
     userPath = expanduser('~')
     saveFilePath = r'%s\Documents\.gitcheck' % userPath
+    saveFilePath = os.path.join(userPath, 'Documents', '.gitcheck')
     if not os.path.exists(saveFilePath):
-        os.makedirs(saveFilePath)
-    filename = saveFilePath + '\mail.properties'
-    json.dump(config, fp=open(filename, 'w'), indent=4)
+        try: 
+            os.makedirs(saveFilePath)
+        except OSError as msg:
+            print("Error: Unable to create", saveFilePath, file=sys.stderr)
+            print(msg, file=sys.stderr)
+            exit(1)
+    filename = os.path.join(saveFilePath, 'mail.properties')
+    if os.path.isfile(filename): bkupMailConfig(filename)
+    try: 
+        fh=open(filename, 'w')
+    except OSError as msg:
+        print("Error: Unable to create", filename, file=sys.stderr)
+        print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    json.dump(config, fh, indent=4)
     print('Please, modify config file located here : %s' % filename)
 
 
@@ -553,6 +586,8 @@ if __name__ == "__main__":
     if opts.no_color:
         for k in colortheme:
             colortheme[k]=''
+    if opts.init_email:
+        initEmailConfig()
     try:
         main(args)
     except KeyboardInterrupt:
